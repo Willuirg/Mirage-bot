@@ -1,11 +1,36 @@
-guild_configs = {}  # Exemplo simples, reinicia ao desligar o bot
-import random
-import asyncio
 import discord
+import asyncio
+import random
+import json
+import os
+import logging
 from discord.ext import commands
+from dotenv import load_dotenv
+from uptime_server import keep_alive
+
+# Carregar variáveis do arquivo .env
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load guild configs from file
+def load_guild_configs():
+    try:
+        with open('guild_configs.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_guild_configs():
+    with open('guild_configs.json', 'w') as f:
+        json.dump(guild_configs, f, indent=2)
+
+guild_configs = load_guild_configs()
 
 intents = discord.Intents.all()
-bot = commands.Bot (command_prefix=';',intents=intents)  
+bot = commands.Bot(command_prefix=';', intents=intents)  
 
 @bot.event
 async def on_ready():
@@ -207,32 +232,54 @@ async def limpar(ctx: commands.Context, quantidade: int = 10):
 
 
 
-@bot.tree.command(description= "Spama o chat KKKKKKKKKKKKK")
-async def spam(interaction: discord.Interaction, quantidade: int =10):
-    if interaction.user.id == 771430165611544597:
-        for i in range(quantidade):
-            await interaction.channel.send("Spamado com sucesso! KKKKKKKKKKKK")
-            await asyncio.sleep(0.5)  # Pequeno delay para evitar rate limit
-    else:
-        await interaction.response.send_message("Apenas o Wil pode usar esse comando!", ephemeral=True)
+@bot.tree.command(description="Spama o chat (apenas administradores)")
+async def spam(interaction: discord.Interaction, quantidade: int = 10):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Você não tem permissão para usar esse comando!", ephemeral=True)
+        return
+    
+    if quantidade > 50:
+        await interaction.response.send_message("Quantidade muito alta! Máximo 50 mensagens.", ephemeral=True)
+        return
+        
+    await interaction.response.send_message(f"Enviando {quantidade} mensagens...", ephemeral=True)
+    
+    for i in range(quantidade):
+        await interaction.channel.send(f"Spam message {i+1}/{quantidade}")
+        await asyncio.sleep(1)  # Increased delay to prevent rate limits
 
 
 
 @bot.tree.command(description="Configura o canal onde não pode mandar mensagem")
 async def set_lock_channel(interaction: discord.Interaction, canal: discord.TextChannel):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("Você não tem permissão para usar esse comando!", ephemeral=True)
+        return
+        
     guild_id = interaction.guild.id
-    guild_configs[guild_id] = {"lock_channel": canal.id}
+    if guild_id not in guild_configs:
+        guild_configs[guild_id] = {}
+    guild_configs[guild_id]["lock_channel"] = canal.id
+    save_guild_configs()
     await interaction.response.send_message(f"Canal bloqueado configurado: {canal.mention}", ephemeral=True)
 
 
 @bot.tree.command(description="Bloqueia o canal configurado")
 async def lock(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("Você não tem permissão para usar esse comando!", ephemeral=True)
+        return
+        
     guild_id = interaction.guild.id
     config = guild_configs.get(guild_id)
     if not config or "lock_channel" not in config:
         await interaction.response.send_message("Nenhum canal configurado para lock.", ephemeral=True)
         return
     canal = interaction.guild.get_channel(config["lock_channel"])
+    if not canal:
+        await interaction.response.send_message("Canal configurado não encontrado!", ephemeral=True)
+        return
+        
     overwrite = canal.overwrites_for(interaction.guild.default_role)
     overwrite.send_messages = False
     await canal.set_permissions(interaction.guild.default_role, overwrite=overwrite)
@@ -241,12 +288,20 @@ async def lock(interaction: discord.Interaction):
 
 @bot.tree.command(description="Desbloqueia o canal configurado")
 async def unlock(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("Você não tem permissão para usar esse comando!", ephemeral=True)
+        return
+        
     guild_id = interaction.guild.id
     config = guild_configs.get(guild_id)
     if not config or "lock_channel" not in config:
         await interaction.response.send_message("Nenhum canal configurado para unlock.", ephemeral=True)
         return
-    canal = interaction.guild.get_channel(config["lock_channel"])
+    canal = interaction.guild.get_ch-annel(config["lock_channel"])
+    if not canal:
+        await interaction.response.send_message("Canal configurado não encontrado!", ephemeral=True)
+        return
+        
     overwrite = canal.overwrites_for(interaction.guild.default_role)
     overwrite.send_messages = True
     await canal.set_permissions(interaction.guild.default_role, overwrite=overwrite)
@@ -311,9 +366,24 @@ async def mute(ctx: commands.Context, member: discord.Member, *, reason=None):
 
 
 @bot.command()
-async def castigo(ctx: commands.Context, member: discord.Member, *, reason=None, ):
+async def castigo(ctx: commands.Context, member: discord.Member, *, reason=None):
     if ctx.author.guild_permissions.manage_messages:
-        await member.timeout(discord.utils.utcnow() + discord.utils.timedelta(minutes=10), reason=reason)
-        await ctx.reply(f"{member.mention} foi colocado em timeout por 10 minutos! Motivo: {reason if reason else 'Nenhum motivo especificado.'}")
+        try:
+            await member.timeout(discord.utils.utcnow() + discord.utils.timedelta(minutes=10), reason=reason)
+            await ctx.reply(f"{member.mention} foi colocado em timeout por 10 minutos! Motivo: {reason if reason else 'Nenhum motivo especificado.'}")
+        except discord.Forbidden:
+            await ctx.reply("Não tenho permissão para aplicar timeout neste usuário.")
+        except Exception as e:
+            await ctx.reply(f"Erro ao aplicar castigo: {str(e)}")
     else:
         await ctx.reply("Você não tem permissão para aplicar castigos.")
+
+# Iniciar servidor HTTP para Uptime Robot
+keep_alive()
+
+# Pegar o token do arquivo .env
+token = os.getenv('DISCORD_TOKEN')
+if not token:
+    print("ERRO: Token do Discord não encontrado! Adicione DISCORD_TOKEN no arquivo .env")
+else:
+    bot.run(token)
